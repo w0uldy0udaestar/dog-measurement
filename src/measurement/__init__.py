@@ -1,1 +1,1 @@
-from .extractor import DogMeasurementExtractor, discover_landmarks
+from .extractor import DogMeasurementExtractor

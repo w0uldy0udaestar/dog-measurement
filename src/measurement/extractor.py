@@ -1,244 +1,167 @@
 """
 SMAL 메시에서 강아지 신체 치수를 추출하는 파이프라인.
 
-SMAL 모델은 3,889 vertices, 33 body segments로 구성.
-각 vertex는 해부학적 위치에 고정 → 치수 추출 가능.
+SMAL 39dogs_norm 모델 기준:
+- 3,889 vertices, 7,774 faces, 35 joints
+- 좌표계: X=앞(머리), Y=옆(좌우대칭), Z=위아래(위가 양수)
+- 단위: SMAL 자체 단위 (실제 cm 아님, 스케일 계수 필요)
+
+Joint 구조 (토폴로지 분석 2026-05-09):
+  0: hip_root, 1: spine_low, 2: spine_mid, 3: spine_upper
+  4: chest, 5: shoulder_area, 6: neck_base
+  7-10: 오른쪽 앞다리, 11-14: 왼쪽 앞다리
+  15: neck_upper, 16: head
+  17-20: 오른쪽 뒷다리, 21-24: 왼쪽 뒷다리
+  25-31: 꼬리, 32: 코, 33-34: 귀
 
 사용법:
-    from src.measurement.extractor import DogMeasurementExtractor
-    extractor = DogMeasurementExtractor()
-    measurements = extractor.extract(vertices, faces)
+    extractor = DogMeasurementExtractor.from_smal_model("path/to/smal.pkl")
+    measurements = extractor.extract(vertices, faces, scale_factor=61.0)
 """
 
+import pickle
 import numpy as np
-from typing import Dict, Tuple, Optional
+from pathlib import Path
+from typing import Dict, Optional
 
 
-# SMAL 메시 해부학적 랜드마크 vertex indices
-# 실제 값은 SMAL 메시 토폴로지 분석 후 업데이트 필요 (Day 0 Spike에서 수행)
-# 아래는 SMAL 39dogs_norm 모델 기준 추정치 — 실행 후 시각적 검증 필수
-LANDMARKS = {
-    "neck_center": None,        # 목 중심점
-    "chest_front": None,        # 가슴 앞쪽 (앞다리 사이)
-    "chest_widest": None,       # 가슴 가장 넓은 부분
-    "back_start": None,         # 등 시작점 (목-등 경계)
-    "back_end": None,           # 등 끝점 (꼬리 시작 전)
-    "belly_center": None,       # 배 중심점
-    "shoulder_left": None,      # 왼쪽 어깨
-    "shoulder_right": None,     # 오른쪽 어깨
-    "hip_left": None,           # 왼쪽 엉덩이
-    "hip_right": None,          # 오른쪽 엉덩이
-    "front_leg_top_left": None, # 왼쪽 앞다리 시작
-    "front_leg_top_right": None,
-    "rear_leg_top_left": None,  # 왼쪽 뒷다리 시작
-    "rear_leg_top_right": None,
+SMAL_JOINT_NAMES = {
+    0: "hip_root", 1: "spine_low", 2: "spine_mid", 3: "spine_upper",
+    4: "chest", 5: "shoulder_area", 6: "neck_base",
+    7: "R_front_shoulder", 8: "R_front_elbow", 9: "R_front_wrist", 10: "R_front_paw",
+    11: "L_front_shoulder", 12: "L_front_elbow", 13: "L_front_wrist", 14: "L_front_paw",
+    15: "neck_upper", 16: "head",
+    17: "R_rear_hip", 18: "R_rear_knee", 19: "R_rear_ankle", 20: "R_rear_paw",
+    21: "L_rear_hip", 22: "L_rear_knee", 23: "L_rear_ankle", 24: "L_rear_paw",
+    25: "tail_0", 26: "tail_1", 27: "tail_2", 28: "tail_3",
+    29: "tail_4", 30: "tail_5", 31: "tail_tip",
+    32: "nose", 33: "R_ear", 34: "L_ear",
 }
+
+LEG_JOINT_IDS = set(range(7, 15)) | set(range(17, 25))
 
 
 class DogMeasurementExtractor:
     """SMAL 3D 메시에서 강아지 신체 치수를 추출."""
 
-    def __init__(self, landmarks: Optional[Dict[str, int]] = None):
-        self.landmarks = landmarks or LANDMARKS
-        self._validate_landmarks()
+    def __init__(self, joint_regressor: np.ndarray, skinning_weights: np.ndarray):
+        self.J_reg = joint_regressor      # (35, 3889)
+        self.weights = skinning_weights   # (3889, 35)
+        self.part_labels = np.argmax(skinning_weights, axis=1)
+        self.torso_mask = ~np.isin(self.part_labels, list(LEG_JOINT_IDS))
 
-    def _validate_landmarks(self):
-        missing = [k for k, v in self.landmarks.items() if v is None]
-        if missing:
-            print(f"[WARNING] {len(missing)}개 랜드마크 미설정: {missing[:5]}...")
-            print("  → discover_landmarks()로 SMAL 메시에서 자동 탐색하거나")
-            print("  → 수동으로 vertex index를 설정하세요.")
+    @classmethod
+    def from_smal_model(cls, model_path: str) -> "DogMeasurementExtractor":
+        with open(model_path, "rb") as f:
+            data = pickle.load(f, encoding="latin1")
+        J_reg = data["J_regressor"]
+        if hasattr(J_reg, "toarray"):
+            J_reg = J_reg.toarray()
+        return cls(
+            joint_regressor=np.array(J_reg, dtype=np.float64),
+            skinning_weights=np.array(data["weights"], dtype=np.float64),
+        )
 
     def extract(self, vertices: np.ndarray, faces: np.ndarray,
                 scale_factor: float = 1.0) -> Dict[str, float]:
         """
-        3D 메시에서 주요 치수 추출.
+        BITE 출력 메시에서 치수 추출.
 
         Args:
-            vertices: (N, 3) 메시 정점 좌표
-            faces: (F, 3) 면 인덱스
-            scale_factor: 절대 스케일 보정 계수 (SMAL 단위 → cm)
+            vertices: (3889, 3) SMAL 메시 정점 좌표
+            faces: (7774, 3) 면 인덱스
+            scale_factor: SMAL 단위 → cm 변환 계수.
+                          견종/체중 기반으로 결정됨.
 
         Returns:
             치수 딕셔너리 (단위: cm)
         """
-        measurements = {}
+        joints = self._compute_joints(vertices)
 
-        if all(v is not None for v in self.landmarks.values()):
-            measurements["back_length_cm"] = self._compute_back_length(vertices) * scale_factor
-            measurements["chest_circumference_cm"] = self._compute_circumference(
-                vertices, faces, "chest_widest", axis="sagittal"
-            ) * scale_factor
-            measurements["neck_circumference_cm"] = self._compute_circumference(
-                vertices, faces, "neck_center", axis="sagittal"
-            ) * scale_factor
-            measurements["belly_circumference_cm"] = self._compute_circumference(
-                vertices, faces, "belly_center", axis="sagittal"
-            ) * scale_factor
-            measurements["shoulder_width_cm"] = self._compute_distance(
-                vertices, "shoulder_left", "shoulder_right"
-            ) * scale_factor
-        else:
-            measurements = self._estimate_from_bounding_box(vertices, scale_factor)
+        neck_x = joints[6][0]
+        chest_x = (joints[4][0] + joints[5][0]) / 2
+        belly_x = joints[2][0]
 
-        return measurements
-
-    def _compute_distance(self, vertices: np.ndarray,
-                          landmark_a: str, landmark_b: str) -> float:
-        idx_a = self.landmarks[landmark_a]
-        idx_b = self.landmarks[landmark_b]
-        return float(np.linalg.norm(vertices[idx_a] - vertices[idx_b]))
-
-    def _compute_back_length(self, vertices: np.ndarray) -> float:
-        return self._compute_distance(vertices, "back_start", "back_end")
-
-    def _compute_circumference(self, vertices: np.ndarray, faces: np.ndarray,
-                                landmark: str, axis: str = "sagittal") -> float:
-        """
-        특정 랜드마크 위치에서 메시를 절단하고 둘레를 계산.
-
-        절단면(cross-section)을 만들어 교차 곡선의 길이를 구함.
-        """
-        idx = self.landmarks[landmark]
-        point = vertices[idx]
-
-        if axis == "sagittal":
-            normal = np.array([1.0, 0.0, 0.0])
-        elif axis == "coronal":
-            normal = np.array([0.0, 0.0, 1.0])
-        else:
-            normal = np.array([0.0, 1.0, 0.0])
-
-        cross_section = self._mesh_cross_section(vertices, faces, point, normal)
-
-        if cross_section is None or len(cross_section) < 3:
-            return 0.0
-
-        return self._polygon_perimeter(cross_section)
-
-    def _mesh_cross_section(self, vertices: np.ndarray, faces: np.ndarray,
-                             plane_point: np.ndarray, plane_normal: np.ndarray
-                             ) -> Optional[np.ndarray]:
-        """
-        메시를 평면으로 절단하여 교차점들을 반환.
-
-        평면 방정식: dot(normal, (x - point)) = 0
-        각 삼각형 edge가 평면을 횡단하면 교차점 계산.
-        """
-        plane_normal = plane_normal / np.linalg.norm(plane_normal)
-        signed_dists = np.dot(vertices - plane_point, plane_normal)
-        intersection_points = []
-
-        for face in faces:
-            edges = [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])]
-            for i, j in edges:
-                d_i, d_j = signed_dists[i], signed_dists[j]
-                if d_i * d_j < 0:
-                    t = d_i / (d_i - d_j)
-                    point = vertices[i] + t * (vertices[j] - vertices[i])
-                    intersection_points.append(point)
-
-        if len(intersection_points) < 3:
-            return None
-
-        points = np.array(intersection_points)
-        return self._order_points_on_plane(points, plane_normal)
-
-    def _order_points_on_plane(self, points: np.ndarray,
-                                normal: np.ndarray) -> np.ndarray:
-        """교차점들을 평면 위에서 각도순으로 정렬 (둘레 계산을 위해)."""
-        centroid = points.mean(axis=0)
-        rel = points - centroid
-
-        abs_normal = np.abs(normal)
-        if abs_normal[0] < abs_normal[1] and abs_normal[0] < abs_normal[2]:
-            ref = np.array([1.0, 0.0, 0.0])
-        elif abs_normal[1] < abs_normal[2]:
-            ref = np.array([0.0, 1.0, 0.0])
-        else:
-            ref = np.array([0.0, 0.0, 1.0])
-
-        u = np.cross(normal, ref)
-        u = u / np.linalg.norm(u)
-        v = np.cross(normal, u)
-
-        angles = np.arctan2(np.dot(rel, v), np.dot(rel, u))
-        order = np.argsort(angles)
-        return points[order]
-
-    def _polygon_perimeter(self, points: np.ndarray) -> float:
-        """정렬된 3D 점들의 폐합 둘레 길이."""
-        n = len(points)
-        perimeter = 0.0
-        for i in range(n):
-            perimeter += np.linalg.norm(points[(i + 1) % n] - points[i])
-        return perimeter
-
-    def _estimate_from_bounding_box(self, vertices: np.ndarray,
-                                     scale_factor: float) -> Dict[str, float]:
-        """
-        랜드마크 없이 bounding box 기반 대략적 치수 추정.
-        Day 0 Spike용 폴백 — 정확도 낮음.
-        """
-        mins = vertices.min(axis=0)
-        maxs = vertices.max(axis=0)
-        dims = maxs - mins
-
-        height = dims[1] * scale_factor
-        length = dims[0] * scale_factor
-        width = dims[2] * scale_factor
+        neck_circ = self._circumference_at(vertices, faces, neck_x)
+        chest_circ = self._circumference_at(vertices, faces, chest_x)
+        belly_circ = self._circumference_at(vertices, faces, belly_x)
+        back_length = abs(joints[6][0] - joints[0][0])
 
         return {
-            "body_length_cm": length,
-            "body_height_cm": height,
-            "body_width_cm": width,
-            "estimated_chest_circumference_cm": (height + width) * 1.1,
-            "estimated_back_length_cm": length * 0.6,
-            "note": "bounding box 기반 추정치 — 랜드마크 설정 후 정확한 값으로 교체 필요",
+            "neck_circumference_cm": neck_circ * scale_factor,
+            "chest_circumference_cm": chest_circ * scale_factor,
+            "belly_circumference_cm": belly_circ * scale_factor,
+            "back_length_cm": back_length * scale_factor,
+            "raw_smal": {
+                "neck_circ": neck_circ,
+                "chest_circ": chest_circ,
+                "belly_circ": belly_circ,
+                "back_length": back_length,
+            },
+            "joints_used": {
+                "neck": f"Joint 6 (X={neck_x:.4f})",
+                "chest": f"Joint 4-5 avg (X={chest_x:.4f})",
+                "belly": f"Joint 2 (X={belly_x:.4f})",
+                "back": f"Joint 6→0 (X={joints[6][0]:.4f}→{joints[0][0]:.4f})",
+            },
         }
 
+    def _compute_joints(self, vertices: np.ndarray) -> np.ndarray:
+        if hasattr(self.J_reg, 'toarray'):
+            return self.J_reg.toarray() @ vertices
+        return self.J_reg @ vertices
 
-def discover_landmarks(vertices: np.ndarray, smal_parts: np.ndarray) -> Dict[str, int]:
-    """
-    SMAL 파트 레이블에서 랜드마크 vertex index를 자동 탐색.
+    def _circumference_at(self, vertices: np.ndarray, faces: np.ndarray,
+                           x_pos: float) -> float:
+        """X 위치에서 몸통만 수직 절단하여 둘레 계산."""
+        normal = np.array([1.0, 0.0, 0.0])
+        signed = vertices[:, 0] - x_pos
+        points = []
 
-    SMAL 모델의 33 body segments:
-    0-3: torso, 4-7: front legs, 8-11: rear legs,
-    12-15: head/neck, 16-19: tail, 20+: ears 등
+        for face in faces:
+            has_torso = any(self.torso_mask[v] for v in face)
+            if not has_torso:
+                continue
+            for i, j in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])]:
+                if signed[i] * signed[j] < 0:
+                    t = signed[i] / (signed[i] - signed[j])
+                    pt = vertices[i] + t * (vertices[j] - vertices[i])
+                    points.append(pt)
 
-    Args:
-        vertices: (N, 3) 정점 좌표
-        smal_parts: (N,) 각 vertex의 파트 레이블 (0-32)
+        if len(points) < 3:
+            return 0.0
 
-    Returns:
-        랜드마크 vertex index 딕셔너리
-    """
-    landmarks = {}
+        pts = np.array(points)
+        return self._ordered_perimeter(pts)
 
-    torso_mask = np.isin(smal_parts, [0, 1, 2, 3])
-    torso_verts = vertices[torso_mask]
-    torso_indices = np.where(torso_mask)[0]
+    def _ordered_perimeter(self, points: np.ndarray) -> float:
+        """교차점들을 각도순으로 정렬 후 폐합 둘레 계산."""
+        centroid = points.mean(axis=0)
+        rel = points - centroid
+        angles = np.arctan2(rel[:, 2], rel[:, 1])
+        ordered = points[np.argsort(angles)]
+        n = len(ordered)
+        return sum(
+            np.linalg.norm(ordered[(i + 1) % n] - ordered[i])
+            for i in range(n)
+        )
 
-    if len(torso_verts) > 0:
-        x_min_idx = torso_indices[np.argmin(torso_verts[:, 0])]
-        x_max_idx = torso_indices[np.argmax(torso_verts[:, 0])]
-        landmarks["back_start"] = int(x_max_idx)
-        landmarks["back_end"] = int(x_min_idx)
+    def estimate_scale_factor(self, breed: str, weight_kg: float) -> float:
+        """
+        견종+체중에서 SMAL→cm 스케일 계수를 추정.
 
-        x_mid = (torso_verts[:, 0].min() + torso_verts[:, 0].max()) / 2
-        mid_dists = np.abs(torso_verts[:, 0] - x_mid)
-        top_mask = torso_verts[:, 1] > np.median(torso_verts[:, 1])
-        if top_mask.any():
-            mid_top = np.where(top_mask)[0]
-            best = mid_top[np.argmin(mid_dists[mid_top])]
-            landmarks["chest_widest"] = int(torso_indices[best])
+        현재는 단순 선형 추정. 추후 견종별 DB로 교체 예정.
+        체중-체장 관계: back_length_cm ≈ 8.5 * weight_kg^0.33 + 15
+        (경험적 수식 — 실제 데이터로 보정 필요)
+        """
+        estimated_back_cm = 8.5 * (weight_kg ** 0.33) + 15
+        neutral_back_smal = 0.574
+        return estimated_back_cm / neutral_back_smal
 
-    neck_mask = np.isin(smal_parts, [12, 13])
-    neck_verts = vertices[neck_mask]
-    neck_indices = np.where(neck_mask)[0]
-    if len(neck_verts) > 0:
-        centroid = neck_verts.mean(axis=0)
-        dists = np.linalg.norm(neck_verts - centroid, axis=1)
-        landmarks["neck_center"] = int(neck_indices[np.argmin(dists)])
 
-    return landmarks
+def compute_scale_from_ground_truth(smal_back_length: float,
+                                      actual_back_length_cm: float) -> float:
+    """줄자 측정값이 있을 때 정확한 스케일 계수 계산."""
+    if smal_back_length <= 0:
+        return 1.0
+    return actual_back_length_cm / smal_back_length
