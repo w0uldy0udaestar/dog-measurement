@@ -43,36 +43,27 @@ class BITERunner:
         self._load_models()
 
     def _setup_bite_imports(self):
-        """BITE의 src/가 우리 프로젝트의 src/보다 먼저 발견되도록 설정."""
+        """BITE의 src/ 내부를 직접 import할 수 있도록 sys.path 설정."""
+        # BITE 내부 코드는 `from configs.xxx import ...` 형태로 import함
+        # (src. 접두사 없음). 따라서 bite_release/src/를 sys.path에 등록.
+        bite_src = str(self.bite_dir / "src")
         bite_str = str(self.bite_dir)
-
-        # 1. 이미 로드된 src 모듈 제거 (우리 프로젝트 것이 있을 수 있음)
-        for key in list(sys.modules.keys()):
-            if key == "src" or key.startswith("src."):
-                del sys.modules[key]
-
-        # 2. BITE 디렉토리를 sys.path 최상단에 배치
-        if bite_str in sys.path:
-            sys.path.remove(bite_str)
-        sys.path.insert(0, bite_str)
-
-        # 3. 현재 작업 디렉토리('')가 BITE보다 앞에 오지 않도록
-        if "" in sys.path:
-            sys.path.remove("")
-            sys.path.append("")
+        for p in [bite_src, bite_str]:
+            if p in sys.path:
+                sys.path.remove(p)
+            sys.path.insert(0, p)
 
     def _load_models(self):
         print(f"[BITERunner] Loading models on {self.device}...")
 
         self._setup_bite_imports()
 
-        from src.configs.defaults import get_cfg_defaults
-        from src.configs.defaults_global import get_cfg_global_updated, update_cfg_global_with_yaml
-        from src.combined_model.bite_inference_model_for_ttopt import BITEInferenceModel
-        from src.smal_pytorch.smal_model.smal_torch_new import SMAL
-        from src.stacked_hourglass.utils.imutils import get_norm_dict
-        from src.smal_pytorch.renderer.silh_renderer import SilhRenderer
-        from src.configs.SMAL_configs import SMAL_MODEL_CONFIG
+        from configs.barc_cfg_defaults import get_cfg_defaults, update_cfg_global_with_yaml, get_cfg_global_updated
+        from test_time_optimization.bite_inference_model_for_ttopt import BITEInferenceModel
+        from smal_pytorch.smal_model.smal_torch_new import SMAL
+        from stacked_hourglass.datasets.utils_dataset_selection import get_norm_dict, get_single_crop_dataset_from_image
+        from smal_pytorch.renderer.silh_renderer import SilhRenderer
+        from configs.SMAL_configs import SMAL_MODEL_CONFIG
 
         config_name = "refinement_cfg_test_withvertexwisegc_csaddnonflat.yaml"
         checkpoint_name = "cvpr23_dm39dnnv3barcv2b_refwithgcpervertisflat0morestanding0_forrelease_v0/checkpoint.pth.tar"
@@ -164,18 +155,16 @@ class BITERunner:
               - pose: pose parameters
               - image_path: 입력 이미지 경로
         """
-        from src.stacked_hourglass.utils.imutils import get_norm_dict
-        from src.combined_model.loss.loss_utils import reset_loss_values
-        from src.smal_pytorch.utils import get_optimed_pose_with_glob
-        from src.smal_pytorch.utils import rotmat_to_rot6d
-        from src.combined_model.loss.ttopt_loss_utils import (
+        from stacked_hourglass.datasets.utils_dataset_selection import get_norm_dict, get_single_crop_dataset_from_image
+        from combined_model.loss.loss_utils import reset_loss_values
+        from lifting_to_3d.utils.geometry_utils import rot6d_to_rotmat, rotmat_to_rot6d
+        from smal_pytorch.utils import get_optimed_pose_with_glob
+        from combined_model.loss.ttopt_loss_utils import (
             leg_sideway_error, leg_torsion_error,
             tail_sideway_error, tail_torsion_error,
             spine_sideway_error, spine_torsion_error,
             calculate_plane_errors_batch,
         )
-        from src.combined_model.datasets.stanext24_withgc import StanExtGC as StanExt
-        from src.stacked_hourglass.datasets.samplers.custom_crop_from_image import get_single_crop_dataset_from_image
 
         if bbox is None:
             bbox = self.detect_bbox(image_path)
@@ -262,9 +251,9 @@ class BITERunner:
                    optimed_camera_flength, optimed_vert_off_compact,
                    faces_prep, res, keypoint_weights, target_dict):
         """Test-time optimization (301 SGD steps)."""
-        from src.smal_pytorch.utils import get_optimed_pose_with_glob
-        from src.combined_model.loss.loss_utils import reset_loss_values
-        from src.combined_model.loss.ttopt_loss_utils import (
+        from smal_pytorch.utils import get_optimed_pose_with_glob
+        from combined_model.loss.loss_utils import reset_loss_values
+        from combined_model.loss.ttopt_loss_utils import (
             leg_sideway_error, leg_torsion_error,
             tail_sideway_error, tail_torsion_error,
             spine_sideway_error, spine_torsion_error,
@@ -333,7 +322,7 @@ class BITERunner:
                 current_weight_name = "weight_vshift"
                 if HAS_PYTORCH3D and losses.get("arap", {}).get("weight_vshift", 0) > 0:
                     with torch.no_grad():
-                        from src.combined_model.loss.arap import Arap_Loss
+                        from combined_model.loss.arap import Arap_Loss
                         torch_mesh_cmp = Meshes(smal_verts.detach(), faces_prep.detach())
                         arap_loss_fn = Arap_Loss(meshes=torch_mesh_cmp, device=self.device)
 
