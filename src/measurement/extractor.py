@@ -114,15 +114,19 @@ class DogMeasurementExtractor:
     def _circumference_at(self, vertices: np.ndarray, faces: np.ndarray,
                            x_pos: float) -> float:
         """X 위치에서 몸통만 수직 절단하여 둘레 계산."""
-        normal = np.array([1.0, 0.0, 0.0])
         signed = vertices[:, 0] - x_pos
         points = []
+        seen_edges = set()
 
         for face in faces:
-            has_torso = any(self.torso_mask[v] for v in face)
-            if not has_torso:
+            torso_count = sum(1 for v in face if self.torso_mask[v])
+            if torso_count < 2:
                 continue
             for i, j in [(face[0], face[1]), (face[1], face[2]), (face[2], face[0])]:
+                edge_key = (min(i, j), max(i, j))
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
                 if signed[i] * signed[j] < 0:
                     t = signed[i] / (signed[i] - signed[j])
                     pt = vertices[i] + t * (vertices[j] - vertices[i])
@@ -146,17 +150,19 @@ class DogMeasurementExtractor:
             for i in range(n)
         )
 
-    def estimate_scale_factor(self, breed: str, weight_kg: float) -> float:
-        """
-        견종+체중에서 SMAL→cm 스케일 계수를 추정.
+    # neutral 포즈에서 joint 6 (neck_base) ~ joint 0 (hip_root) X 거리
+    NEUTRAL_BACK_LENGTH_SMAL = 0.574
 
-        현재는 단순 선형 추정. 추후 견종별 DB로 교체 예정.
-        체중-체장 관계: back_length_cm ≈ 8.5 * weight_kg^0.33 + 15
-        (경험적 수식 — 실제 데이터로 보정 필요)
+    def estimate_scale_factor(self, weight_kg: float) -> float:
         """
+        체중에서 SMAL→cm 스케일 계수를 추정.
+
+        spike용 근사치. 실제 서비스에서는 견종별 DB 필요.
+        """
+        if weight_kg <= 0:
+            return 1.0
         estimated_back_cm = 8.5 * (weight_kg ** 0.33) + 15
-        neutral_back_smal = 0.574
-        return estimated_back_cm / neutral_back_smal
+        return estimated_back_cm / self.NEUTRAL_BACK_LENGTH_SMAL
 
 
 def compute_scale_from_ground_truth(smal_back_length: float,

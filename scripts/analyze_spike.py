@@ -33,7 +33,7 @@ def load_results(path: str) -> list:
 
 
 def analyze(results: list, extractor: DogMeasurementExtractor,
-            ground_truth: dict = None):
+            ground_truth: dict = None, default_weight: float = 10.0):
     print(f"{'='*60}")
     print(f"Day 0 Spike 분석 결과")
     print(f"{'='*60}")
@@ -59,7 +59,8 @@ def analyze(results: list, extractor: DogMeasurementExtractor,
         verts = r["vertices"]
         faces = r["faces"]
 
-        scale = extractor.estimate_scale_factor("mixed", 10.0)
+        weight = r.get("weight_kg", default_weight)
+        scale = extractor.estimate_scale_factor(weight)
         m = extractor.extract(verts, faces, scale_factor=scale)
         m["name"] = r["name"]
         all_measurements.append(m)
@@ -130,6 +131,7 @@ def main():
     parser = argparse.ArgumentParser(description="Day 0 Spike 결과 분석")
     parser.add_argument("--results", required=True, help="spike_results.pkl 경로")
     parser.add_argument("--ground-truth", help="ground truth CSV (name,back_length_cm,chest_circumference_cm)")
+    parser.add_argument("--weight", type=float, default=10.0, help="기본 체중 (kg). GT CSV에 weight_kg 열이 있으면 무시됨")
     parser.add_argument("--smal-model", default=SMAL_MODEL_PATH, help="SMAL 모델 경로")
     args = parser.parse_args()
 
@@ -144,7 +146,7 @@ def main():
             for row in csv.DictReader(f):
                 gt[row["name"]] = {k: float(v) for k, v in row.items() if k != "name"}
 
-    analyze(results, extractor, ground_truth=gt)
+    analyze(results, extractor, ground_truth=gt, default_weight=args.weight)
 
 
 if __name__ == "__main__":
