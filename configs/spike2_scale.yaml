@@ -1,0 +1,24 @@
+# Day 0 Spike 2: 절대 스케일 복원 테스트
+experiment:
+  name: spike2_scale_recovery
+  description: "참조물 없이 SMAL 모델의 실제 크기를 복원할 수 있는지 확인"
+
+scale_methods:
+  breed_prior:
+    enabled: true
+    description: "견종 + SMAL shape 분포에서 평균 크기 추정"
+  floor_estimation:
+    enabled: true
+    description: "바닥면 + 카메라 높이 기반 거리 추정"
+
+evaluation:
+  pass_criteria: "주요 치수 오차 3cm 이내가 10마리 중 7마리 이상"
+  metrics:
+    - mae_mm
+    - within_30mm_ratio
+  targets:
+    - chest_circumference
+    - back_length
+  n_test_dogs: 10
+
+fail_action: "Approach A (견종 Prior + Concierge)로 피벗"

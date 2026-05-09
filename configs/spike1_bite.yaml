@@ -1,0 +1,22 @@
+# Day 0 Spike 1: BITE 3D 복원 테스트
+experiment:
+  name: spike1_bite_reconstruction
+  description: "BITE로 강아지 사진 → 3D 메시 복원이 되는지 확인"
+
+model:
+  type: bite
+  smal_model_type: 39dogs_norm
+  apply_ttopt: true
+  ttopt_steps: 301
+
+data:
+  image_size: 384
+  test_images_dir: ./data/test_images
+
+evaluation:
+  pass_criteria: "시각적으로 강아지 형상 인식 가능한 3D 메시 생성"
+  output_format: [obj, glb]
+
+environment:
+  device: auto
+  batch_size: 1
