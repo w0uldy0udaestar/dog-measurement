@@ -40,21 +40,32 @@ class BITERunner:
         else:
             self.device = torch.device(device)
 
-        self._add_bite_to_path()
         self._load_models()
 
-    def _add_bite_to_path(self):
-        """BITE 디렉토리를 sys.path 최상단에 등록."""
+    def _setup_bite_imports(self):
+        """BITE의 src/가 우리 프로젝트의 src/보다 먼저 발견되도록 설정."""
         bite_str = str(self.bite_dir)
-        if bite_str not in sys.path:
-            sys.path.insert(0, bite_str)
+
+        # 1. 이미 로드된 src 모듈 제거 (우리 프로젝트 것이 있을 수 있음)
+        for key in list(sys.modules.keys()):
+            if key == "src" or key.startswith("src."):
+                del sys.modules[key]
+
+        # 2. BITE 디렉토리를 sys.path 최상단에 배치
+        if bite_str in sys.path:
+            sys.path.remove(bite_str)
+        sys.path.insert(0, bite_str)
+
+        # 3. 현재 작업 디렉토리('')가 BITE보다 앞에 오지 않도록
+        if "" in sys.path:
+            sys.path.remove("")
+            sys.path.append("")
 
     def _load_models(self):
         print(f"[BITERunner] Loading models on {self.device}...")
 
-        # run_spike.py가 importlib로 이 파일을 직접 로드하므로
-        # 우리 프로젝트의 src 패키지가 sys.modules에 없음.
-        # BITE의 src가 정상적으로 import됨.
+        self._setup_bite_imports()
+
         from src.configs.defaults import get_cfg_defaults
         from src.configs.defaults_global import get_cfg_global_updated, update_cfg_global_with_yaml
         from src.combined_model.bite_inference_model_for_ttopt import BITEInferenceModel
