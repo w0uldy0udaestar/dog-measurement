@@ -86,6 +86,8 @@ def main():
         except Exception as e:
             elapsed = time.time() - t0
             print(f"  FAIL ({elapsed:.0f}초): {e}")
+            import traceback
+            traceback.print_exc()
             results.append({"name": name, "error": str(e), "image_path": img_path})
 
     total_elapsed = time.time() - total_start

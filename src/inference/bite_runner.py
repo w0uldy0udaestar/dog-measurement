@@ -31,7 +31,7 @@ class BITERunner:
 
     def __init__(self, bite_dir: str, device: str = "auto",
                  apply_ttopt: bool = True, ttopt_steps: int = 301):
-        self.bite_dir = Path(bite_dir)
+        self.bite_dir = Path(bite_dir).resolve()
         self.apply_ttopt = apply_ttopt
         self.ttopt_steps = ttopt_steps
 
@@ -58,11 +58,16 @@ class BITERunner:
 
         self._setup_bite_imports()
 
+        # BITE 내부 코드가 상대 경로('./checkpoint/...')를 사용하므로
+        # 작업 디렉토리를 BITE 디렉토리로 변경
+        self._original_cwd = os.getcwd()
+        os.chdir(str(self.bite_dir))
+
         from configs.barc_cfg_defaults import get_cfg_defaults, update_cfg_global_with_yaml, get_cfg_global_updated
         from test_time_optimization.bite_inference_model_for_ttopt import BITEInferenceModel
         from smal_pytorch.smal_model.smal_torch_new import SMAL
         from stacked_hourglass.datasets.utils_dataset_selection import get_norm_dict, get_single_crop_dataset_from_image
-        from smal_pytorch.renderer.silh_renderer import SilhRenderer
+        from smal_pytorch.renderer.differentiable_renderer import SilhRenderer
         from configs.SMAL_configs import SMAL_MODEL_CONFIG
 
         config_name = "refinement_cfg_test_withvertexwisegc_csaddnonflat.yaml"
@@ -118,6 +123,29 @@ class BITERunner:
         )
 
         self.SMAL_MODEL_CONFIG = SMAL_MODEL_CONFIG
+
+        # run() 메서드에서 사용할 모듈들도 미리 import (gradio_demo.py 59-64행 참조)
+        from stacked_hourglass.datasets.utils_dataset_selection import get_norm_dict as _get_norm_dict, get_single_crop_dataset_from_image as _get_crop
+        self._get_norm_dict = _get_norm_dict
+        from test_time_optimization.utils.utils_ttopt import reset_loss_values as _reset_loss, get_optimed_pose_with_glob as _get_pose
+        from lifting_to_3d.utils.geometry_utils import rotmat_to_rot6d as _rotmat_to_rot6d
+        from combined_model.loss_utils.loss_utils import leg_sideway_error, leg_torsion_error, tail_sideway_error, tail_torsion_error, spine_torsion_error, spine_sideway_error
+        from combined_model.loss_utils.loss_utils_gc import calculate_plane_errors_batch
+        from combined_model.loss_utils.loss_arap import Arap_Loss
+        from combined_model.loss_utils.loss_laplacian_mesh_comparison import LaplacianCTF
+        self._get_crop = _get_crop
+        self._reset_loss = _reset_loss
+        self._rotmat_to_rot6d = _rotmat_to_rot6d
+        self._get_pose = _get_pose
+        self._loss_fns = {
+            "leg_sideway": leg_sideway_error, "leg_torsion": leg_torsion_error,
+            "tail_sideway": tail_sideway_error, "tail_torsion": tail_torsion_error,
+            "spine_sideway": spine_sideway_error, "spine_torsion": spine_torsion_error,
+            "gc_plane": calculate_plane_errors_batch,
+            "arap": Arap_Loss, "lapctf": LaplacianCTF,
+        }
+
+        os.chdir(self._original_cwd)
         print(f"[BITERunner] Models loaded.")
 
     def detect_bbox(self, image_path: str) -> Optional[list]:
@@ -155,22 +183,20 @@ class BITERunner:
               - pose: pose parameters
               - image_path: 입력 이미지 경로
         """
-        from stacked_hourglass.datasets.utils_dataset_selection import get_norm_dict, get_single_crop_dataset_from_image
-        from combined_model.loss.loss_utils import reset_loss_values
-        from lifting_to_3d.utils.geometry_utils import rot6d_to_rotmat, rotmat_to_rot6d
-        from smal_pytorch.utils import get_optimed_pose_with_glob
-        from combined_model.loss.ttopt_loss_utils import (
-            leg_sideway_error, leg_torsion_error,
-            tail_sideway_error, tail_torsion_error,
-            spine_sideway_error, spine_torsion_error,
-            calculate_plane_errors_batch,
-        )
+        get_single_crop_dataset_from_image = self._get_crop
+        get_norm_dict = self._get_norm_dict
+        rotmat_to_rot6d = self._rotmat_to_rot6d
+        get_optimed_pose_with_glob = self._get_pose
+
+        # BITE는 numpy array (H, W, 3)를 기대
+        img_pil = Image.open(image_path).convert("RGB")
+        input_image = np.array(img_pil)
 
         if bbox is None:
             bbox = self.detect_bbox(image_path)
 
         val_dataset, val_loader, len_val, test_name_list, data_info, acc_joints = \
-            get_single_crop_dataset_from_image(image_path, bbox=bbox)
+            get_single_crop_dataset_from_image(input_image, bbox=bbox)
 
         norm_dict = get_norm_dict(data_info, self.device)
         keypoint_weights = torch.tensor(
