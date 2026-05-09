@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
 
 
 def main():
@@ -48,7 +48,16 @@ def main():
     print(f"이미지 {len(image_paths)}장 발견")
     os.makedirs(args.output, exist_ok=True)
 
-    from src.inference.bite_runner import BITERunner
+    # 우리 프로젝트의 src/와 BITE의 src/가 이름 충돌하므로
+    # bite_runner.py를 importlib로 직접 로드 (src 패키지 우회)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bite_runner",
+        os.path.join(PROJECT_ROOT, "src", "inference", "bite_runner.py"),
+    )
+    bite_runner_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bite_runner_mod)
+    BITERunner = bite_runner_mod.BITERunner
 
     print(f"\n{'='*60}")
     print(f"BITE 모델 로드 중...")

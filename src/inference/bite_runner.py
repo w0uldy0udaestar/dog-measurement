@@ -44,15 +44,17 @@ class BITERunner:
         self._load_models()
 
     def _add_bite_to_path(self):
+        """BITE 디렉토리를 sys.path 최상단에 등록."""
         bite_str = str(self.bite_dir)
-        src_str = str(self.bite_dir / "src")
-        for p in [bite_str, src_str]:
-            if p not in sys.path:
-                sys.path.insert(0, p)
+        if bite_str not in sys.path:
+            sys.path.insert(0, bite_str)
 
     def _load_models(self):
         print(f"[BITERunner] Loading models on {self.device}...")
 
+        # run_spike.py가 importlib로 이 파일을 직접 로드하므로
+        # 우리 프로젝트의 src 패키지가 sys.modules에 없음.
+        # BITE의 src가 정상적으로 import됨.
         from src.configs.defaults import get_cfg_defaults
         from src.configs.defaults_global import get_cfg_global_updated, update_cfg_global_with_yaml
         from src.combined_model.bite_inference_model_for_ttopt import BITEInferenceModel
