@@ -277,14 +277,15 @@ class BITERunner:
                    optimed_camera_flength, optimed_vert_off_compact,
                    faces_prep, res, keypoint_weights, target_dict):
         """Test-time optimization (301 SGD steps)."""
-        from smal_pytorch.utils import get_optimed_pose_with_glob
-        from combined_model.loss.loss_utils import reset_loss_values
-        from combined_model.loss.ttopt_loss_utils import (
-            leg_sideway_error, leg_torsion_error,
-            tail_sideway_error, tail_torsion_error,
-            spine_sideway_error, spine_torsion_error,
-            calculate_plane_errors_batch,
-        )
+        get_optimed_pose_with_glob = self._get_pose
+        reset_loss_values = self._reset_loss
+        leg_sideway_error = self._loss_fns["leg_sideway"]
+        leg_torsion_error = self._loss_fns["leg_torsion"]
+        tail_sideway_error = self._loss_fns["tail_sideway"]
+        tail_torsion_error = self._loss_fns["tail_torsion"]
+        spine_sideway_error = self._loss_fns["spine_sideway"]
+        spine_torsion_error = self._loss_fns["spine_torsion"]
+        calculate_plane_errors_batch = self._loss_fns["gc_plane"]
         try:
             from pytorch3d.structures import Meshes
             from pytorch3d.loss import mesh_edge_loss, mesh_normal_consistency, mesh_laplacian_smoothing
@@ -348,7 +349,7 @@ class BITERunner:
                 current_weight_name = "weight_vshift"
                 if HAS_PYTORCH3D and losses.get("arap", {}).get("weight_vshift", 0) > 0:
                     with torch.no_grad():
-                        from combined_model.loss.arap import Arap_Loss
+                        Arap_Loss = self._loss_fns["arap"]
                         torch_mesh_cmp = Meshes(smal_verts.detach(), faces_prep.detach())
                         arap_loss_fn = Arap_Loss(meshes=torch_mesh_cmp, device=self.device)
 
